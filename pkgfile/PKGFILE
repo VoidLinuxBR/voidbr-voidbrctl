@@ -1,7 +1,7 @@
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
 
-pkgname=voidbr-pkgname
-pkgdesc="Package template for VoidLinuxBR"
+pkgname=voidbr-voidbrctl
+pkgdesc="systemctl/journalctl para o runit"
 pkgver=$(date +%Y%m%d)
 pkgrel=$(date +%H%M)
 provides=()               # "eu SOU o $pkgname pkg1, pra quem depender deles"
@@ -16,13 +16,6 @@ md5sums=('SKIP')
 makedepends=()
 depends=()
 backup=()
-
-# Automatically detect and use the correct install file
-if [ -e "${pkgname}.install" ]; then
-	install=${pkgname}.install
-elif [ -e "pkgbuild.install" ]; then
-	install=pkgfile.install
-fi
 
 package() {
 	# Verify default folder
