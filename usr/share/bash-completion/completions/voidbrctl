@@ -1,0 +1,274 @@
+# shellcheck shell=bash
+# bash completion para voidbrctl — atende também os symlinks systemctl,
+# journalctl e voidjournal.
+#
+# Instalação:
+#   install -Dm644 voidbrctl.bash /usr/share/bash-completion/completions/voidbrctl
+#   ln -s voidbrctl /usr/share/bash-completion/completions/systemctl     # opcional
+#   ln -s voidbrctl /usr/share/bash-completion/completions/journalctl    # opcional
+#   ln -s voidbrctl /usr/share/bash-completion/completions/voidjournal   # opcional
+#
+# Respeita as mesmas variáveis do voidbrctl: VOIDBRCTL_SVDIR, VOIDBRCTL_RUNDIR,
+# VOIDBRCTL_CONFDIR, VOIDBRCTL_UNITDIR, VOIDBRCTL_TIMERDIR e VOIDBRCTL_UNITPATH.
+
+_voidbrctl_cmds='status start stop restart try-restart condrestart reload
+reload-or-restart kill enable disable mask unmask is-active is-enabled is-failed
+list-units list ls list-unit-files list-dependencies cat show edit
+import daemon-reload logs journal journalctl list-timers timer timers
+calendar timespan timerd boot-cleanup setup poweroff reboot halt help'
+
+_voidbrctl_global='--no-block --no-color --color --color=always -q --quiet --system --version -h --help'
+_voidbrctl_logopts='-u --unit -f --follow -n --lines -r --reverse -S --since -U --until
+-b --boot -g --grep --case-sensitive -o --output -e --pager-end -x -a --all
+--no-pager --no-hostname -D --directory --list -h --help'
+_voidbrctl_importopts='-n --dry-run -f --force --enable --now --restart= --name='
+_voidbrctl_timeraddopts='-u --user -d --desc --no-persistent --now -n --dry-run -f --force'
+_voidbrctl_restartpol='no always on-success on-failure on-abnormal on-abort on-watchdog'
+_voidbrctl_outfmt='short short-iso short-precise cat json'
+_voidbrctl_states='active inactive failed activating deactivating running exited dead'
+_voidbrctl_props='Id Description LoadState ActiveState SubState UnitFileState MainPID
+ActiveEnterTimestamp FragmentPath NormallyUp ExecMainStatus ExecMainExitTimestamp
+SourcePath Type Restart Requires Wants After User TriggeredBy'
+_voidbrctl_signals='HUP INT QUIT KILL USR1 USR2 ALRM TERM CONT STOP TSTP WINCH'
+_voidbrctl_calendar='minutely hourly daily weekly monthly quarterly semiannually yearly'
+
+# serviços: diretórios de $VOIDBRCTL_SVDIR com run + o que está em $VOIDBRCTL_RUNDIR
+# (mesma regra do listServiceNames do voidbrctl)
+_voidbrctl_services() {
+	local sv=${VOIDBRCTL_SVDIR:-/etc/sv} f
+	{
+		for f in "$sv"/*/run; do
+			[[ -e $f ]] || continue
+			f=${f%/run}
+			printf '%s\n' "${f##*/}"
+		done
+		_voidbrctl_enabled
+	} | sort -u
+}
+
+# serviços habilitados: entradas em $VOIDBRCTL_RUNDIR
+_voidbrctl_enabled() {
+	local d=${VOIDBRCTL_RUNDIR:-/var/service} f
+	for f in "$d"/*; do
+		[[ -e $f || -L $f ]] || continue
+		printf '%s\n' "${f##*/}"
+	done
+}
+
+# serviços que NÃO estão habilitados
+_voidbrctl_disabled() {
+	local -A on=()
+	local n
+	while IFS= read -r n; do on[$n]=1; done < <(_voidbrctl_enabled)
+	while IFS= read -r n; do
+		[[ -z ${on[$n]} ]] && printf '%s\n' "$n"
+	done < <(_voidbrctl_services)
+}
+
+# filtra pelo supervise/stat do runsv: up = rodando, down = parado
+_voidbrctl_state() {
+	local want=$1 rd=${VOIDBRCTL_RUNDIR:-/var/service} n st
+	while IFS= read -r n; do
+		st=
+		[[ -r $rd/$n/supervise/stat ]] && read -r st <"$rd/$n/supervise/stat"
+		if [[ $want == up ]]; then
+			[[ $st == run* ]] && printf '%s\n' "$n"
+		else
+			[[ $st != run* ]] && printf '%s\n' "$n"
+		fi
+	done < <(_voidbrctl_services)
+}
+
+# timers importados: $VOIDBRCTL_TIMERDIR/*.timer
+_voidbrctl_timers() {
+	local d=${VOIDBRCTL_TIMERDIR:-${VOIDBRCTL_CONFDIR:-/etc/voidbrctl}/timers} f
+	for f in "$d"/*.timer; do
+		[[ -e $f ]] || continue
+		printf '%s\n' "${f##*/}"
+	done
+}
+
+# units do systemd para import (.service sem sufixo, .timer com)
+_voidbrctl_unitfiles() {
+	local unitdir=${VOIDBRCTL_UNITDIR:-${VOIDBRCTL_CONFDIR:-/etc/voidbrctl}/system}
+	local path="$unitdir:/etc/systemd/system:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system"
+	[[ -n $VOIDBRCTL_UNITPATH ]] && path="$unitdir:$VOIDBRCTL_UNITPATH"
+	local p f
+	local IFS=:
+	for p in $path; do
+		for f in "$p"/*.service "$p"/*.timer; do
+			[[ -f $f ]] || continue
+			f=${f##*/}
+			printf '%s\n' "${f%.service}"
+		done
+	done | sort -u
+}
+
+# acrescenta a COMPREPLY as palavras de $1 que casam com $cur
+_voidbrctl_add() {
+	local IFS=$' \t\n'
+	mapfile -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "$1" -- "$cur")
+}
+
+_voidbrctl() {
+	COMPREPLY=()
+	local cword=$COMP_CWORD
+	local cur=${COMP_WORDS[cword]} prev=${COMP_WORDS[cword-1]}
+	local opt= prefix=
+
+	# --opção=valor: o bash pode ou não quebrar a palavra no '='
+	if [[ $cur == = ]]; then
+		opt=$prev cur=
+	elif [[ $prev == = ]]; then
+		opt=${COMP_WORDS[cword-2]}
+	elif [[ $cur == --*=* ]]; then
+		opt=${cur%%=*} prefix=$opt= cur=${cur#*=}
+	fi
+
+	# acha o comando (e o subcomando de "timer"), pulando opções globais
+	local cmd= sub= i w
+	case ${COMP_WORDS[0]##*/} in
+	journalctl | voidjournal) cmd=logs ;;
+	*)
+		for ((i = 1; i < cword; i++)); do
+			w=${COMP_WORDS[i]}
+			[[ $w == -* || $w == = || ${COMP_WORDS[i-1]} == = ]] && continue
+			if [[ -z $cmd ]]; then
+				cmd=$w
+			else
+				sub=$w
+				break
+			fi
+		done
+		;;
+	esac
+	[[ $cmd == journal || $cmd == journalctl ]] && cmd=logs
+
+	# valores de --opção=
+	if [[ -n $opt ]]; then
+		case $opt in
+		--restart) _voidbrctl_add "$_voidbrctl_restartpol" ;;
+		--color) _voidbrctl_add 'always' ;;
+		--output) _voidbrctl_add "$_voidbrctl_outfmt" ;;
+		--unit) _voidbrctl_add "$(_voidbrctl_services)" ;;
+		--signal) _voidbrctl_add "$_voidbrctl_signals" ;;
+		--state) _voidbrctl_add "$_voidbrctl_states" ;;
+		--type) _voidbrctl_add 'service timer' ;;
+		--property) _voidbrctl_add "$_voidbrctl_props" ;;
+		--directory)
+			compopt -o filenames 2>/dev/null
+			mapfile -t COMPREPLY < <(compgen -d -- "$cur") ;;
+		esac
+		[[ -n $prefix ]] && COMPREPLY=("${COMPREPLY[@]/#/$prefix}")
+		return
+	fi
+
+	if [[ -z $cmd ]]; then
+		if [[ $cur == -* ]]; then
+			_voidbrctl_add "$_voidbrctl_global"
+			[[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == *= ]] && compopt -o nospace 2>/dev/null
+		else
+			_voidbrctl_add "$_voidbrctl_cmds"
+		fi
+		return
+	fi
+
+	# valores de opções separadas ("-o json", "-s HUP" ...)
+	case $cmd in
+	logs)
+		case $prev in
+		-u | --unit) _voidbrctl_add "$(_voidbrctl_services)"; return ;;
+		-o | --output) _voidbrctl_add "$_voidbrctl_outfmt"; return ;;
+		-S | --since | -U | --until) _voidbrctl_add 'today yesterday now'; return ;;
+		-D | --directory)
+			compopt -o filenames 2>/dev/null
+			mapfile -t COMPREPLY < <(compgen -d -- "$cur")
+			return ;;
+		-n | --lines | -g | --grep) return ;;
+		esac ;;
+	kill)
+		[[ $prev == -s || $prev == --signal ]] && { _voidbrctl_add "$_voidbrctl_signals"; return; } ;;
+	show)
+		[[ $prev == -p || $prev == --property ]] && { _voidbrctl_add "$_voidbrctl_props"; return; } ;;
+	list-units | list | ls)
+		case $prev in
+		--state) _voidbrctl_add "$_voidbrctl_states"; return ;;
+		-t | --type) _voidbrctl_add 'service timer'; return ;;
+		esac ;;
+	status)
+		[[ $prev == -n || $prev == --lines ]] && return ;;
+	import)
+		[[ $prev == --restart ]] && { _voidbrctl_add "$_voidbrctl_restartpol"; return; }
+		[[ $prev == --name ]] && return ;;
+	calendar)
+		[[ $prev == --iterations ]] && return ;;
+	timer | timers)
+		[[ $prev == -u || $prev == --user || $prev == -d || $prev == --desc ]] && return ;;
+	esac
+
+	local list
+	case $cmd in
+	status)
+		list="$(_voidbrctl_services) $(_voidbrctl_timers) -n --lines -l --full --no-pager" ;;
+	mask | unmask | is-active | is-enabled | is-failed | cat | edit | restart | reload-or-restart)
+		list="$(_voidbrctl_services) $(_voidbrctl_timers)" ;;
+	start)
+		list="$(_voidbrctl_state down) $(_voidbrctl_timers)" ;;
+	stop)
+		list="$(_voidbrctl_state up) $(_voidbrctl_timers)" ;;
+	reload | try-restart | condrestart | kill)
+		list=$(_voidbrctl_state up)
+		[[ -z ${list//[[:space:]]/} ]] && list=$(_voidbrctl_services)
+		[[ $cmd == kill ]] && list+=' -s --signal' ;;
+	enable)
+		list="$(_voidbrctl_disabled) $(_voidbrctl_timers) --now" ;;
+	disable)
+		list="$(_voidbrctl_enabled) $(_voidbrctl_timers) --now" ;;
+	list-dependencies)
+		list="$(_voidbrctl_services) --reverse --all --no-pager" ;;
+	show)
+		list="$(_voidbrctl_services) $(_voidbrctl_timers) -p --property --value" ;;
+	list-units | list | ls)
+		list='-a --all --failed --state -t --type --no-legend --no-pager' ;;
+	list-timers)
+		list='-a --all --no-pager' ;;
+	import)
+		if [[ $cur == */* || $cur == .* || $cur == ~* ]]; then
+			compopt -o filenames 2>/dev/null
+			mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+			return
+		fi
+		_voidbrctl_add "$_voidbrctl_importopts $(_voidbrctl_unitfiles)"
+		# não pôr espaço depois de --restart= / --name=
+		[[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == *= ]] && compopt -o nospace 2>/dev/null
+		return ;;
+	timer | timers)
+		case $sub in
+		'') list='add new create remove rm del delete list ls help' ;;
+		add | new | create)
+			# depois de "--" vem o comando a executar
+			for ((i = 2; i < cword; i++)); do
+				if [[ ${COMP_WORDS[i]} == -- ]]; then
+					compopt -o default 2>/dev/null
+					mapfile -t COMPREPLY < <(compgen -c -- "$cur")
+					return
+				fi
+			done
+			list="$_voidbrctl_timeraddopts --" ;;
+		remove | rm | del | delete)
+			list=$(_voidbrctl_timers) ;;
+		*) return ;;
+		esac ;;
+	logs)
+		list=$_voidbrctl_logopts ;;
+	calendar)
+		list="$_voidbrctl_calendar --iterations" ;;
+	help | -h | --help)
+		list=$_voidbrctl_cmds ;;
+	*)
+		return ;;
+	esac
+	_voidbrctl_add "$list"
+}
+
+complete -F _voidbrctl voidbrctl systemctl journalctl voidjournal
